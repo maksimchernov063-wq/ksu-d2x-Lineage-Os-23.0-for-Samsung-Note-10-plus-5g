@@ -1,4 +1,4 @@
-name: Build KernelSU-Next IMG for d2x
+name: Build KernelSU-Next Legacy IMG for d2x
 
 on:
   workflow_dispatch:
@@ -10,55 +10,98 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git bc bison build-essential ccache curl flex libssl-dev libncurses5-dev lzop zip unzip python3 python-is-python3
+          sudo apt-get install -y git bc bison build-essential ccache curl flex libssl-dev libncurses5-dev lzop zip unzip python3 python-is-python3 mkbootimg jq
 
       - name: Clone LineageOS 23.2 Kernel Source
         run: |
-          GH="https://""github.com"
+          GH="https://github.com"
           git clone --depth=1 -b lineage-23.2 "$GH/LineageOS/android_kernel_samsung_exynos9820.git" kernel
 
-      - name: Setup Toolchain (Clang + GCC)
+      - name: Setup Official AOSP Clang (r563880c)
         run: |
-          GH="https://""github.com"
-          RAW="https://""://githubusercontent.com"
-          mkdir -p toolchain/clang toolchain/gcc64 toolchain/gcc32
-          git clone --depth=1 "$GH/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git" toolchain/gcc64
-          git clone --depth=1 "$GH/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git" toolchain/gcc32
-          cd toolchain/clang
-          bash <(curl -s "$RAW/Neutron-Toolchains/antman/main/antman") -S
+          GOOG="https://android.googlesource.com"
+          mkdir -p toolchain/clang
+          curl -fL "$GOOG/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r563880c.tar.gz" -o clang.tar.gz
+          tar -xzf clang.tar.gz -C toolchain/clang
 
-      - name: Integrate KernelSU-Next & Apply 4.14 Hooks
+      - name: Integrate KernelSU-Next (legacy for 4.14)
         run: |
-          RAW="https://""://githubusercontent.com"
+          RAW="https://raw.githubusercontent.com"
           cd kernel
-          curl -LSs "$RAW/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          curl -LSs "$RAW/rifsxd/KernelSU-Next/next/kernel/manual_hooks.patch" -o hooks.patch || true
-          if [ -s hooks.patch ]; then git apply hooks.patch || true; fi
-          echo "CONFIG_KSU=y" >> arch/arm64/configs/exynos9820-d2x_defconfig
-          echo "CONFIG_OVERLAY_FS=y" >> arch/arm64/configs/exynos9820-d2x_defconfig
-          echo "CONFIG_KPROBES=n" >> arch/arm64/configs/exynos9820-d2x_defconfig
+          curl -LSs "$RAW/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          
+          DEFCONFIG="arch/arm64/configs/exynos9820-d2x_defconfig"
+          echo "CONFIG_KSU=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_KPROBE_HOOKS=y" >> $DEFCONFIG
+          echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
+          echo "CONFIG_KPROBES=y" >> $DEFCONFIG
+          echo "CONFIG_HAVE_KPROBES=y" >> $DEFCONFIG
+          echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
 
-      - name: Compile Kernel
+      - name: Compile Kernel with LLVM
         run: |
           cd kernel
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$GITHUB_WORKSPACE/toolchain/gcc64/bin:$GITHUB_WORKSPACE/toolchain/gcc32/bin:$PATH"
-          make O=out ARCH=arm64 exynos9820-d2x_defconfig
-          make -j$(nproc) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 exynos9820-d2x_defconfig
+          make -j$(nproc) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Repack boot.img with mkbootimg
+      - name: Unpack and Repack boot.img
         run: |
-          GH="https://""github.com"
-          MIR="https://""mirrorbits.lineageos.org"
-          curl -L "$GH/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk" -o magisk.apk
-          unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
-          mv libmagiskboot.so magiskboot && chmod +x magiskboot
+          MIR="https://mirrorbits.lineageos.org"
+          GOOG="https://android.googlesource.com"
+          
           curl -fL "$MIR/full/d2x/20261115/boot.img" -o boot.img
-          ./magiskboot unpack boot.img
-          git clone --depth=1 "$GH/osm0sis/mkbootimg.git" mkbootimg_src
-          make -C mkbootimg_src
-          ./mkbootimg_src/mkbootimg --kernel kernel/out/arch/arm64/boot/Image --ramdisk ramdisk.cpio --cmdline "androidboot.super_partition=system" --base 0x10000000 --pagesize 2048 --header_version 1 --os_version 16.0.0 --os_patch_level 2026-11 -o boot_ksu.img
+          curl -fL "$GOOG/platform/system/tools/mkbootimg/+/refs/heads/main/unpack_bootimg.py?format=TEXT" | base64 -d > unpack_bootimg.py
+          
+          python3 unpack_bootimg.py --boot_img boot.img --out unpacked
+          
+          if [ ! -f unpacked/mkbootimg_args.json ]; then
+            echo "ERROR: mkbootimg_args.json not found!"
+            exit 1
+          fi
+          
+          python3 -c '
+          import json, subprocess, os, sys
+
+          with open("unpacked/mkbootimg_args.json") as f:
+              args = json.load(f)
+
+          allowed_keys = {
+              "kernel_offset", "ramdisk_offset", "second_offset", "tags_offset",
+              "dtb_offset", "pagesize", "header_version", "os_version", "os_patch_level",
+              "cmdline", "base", "board", "dtb", "second"
+          }
+
+          cmd = [
+              "mkbootimg",
+              "--kernel", "kernel/out/arch/arm64/boot/Image",
+              "--ramdisk", "unpacked/ramdisk",
+              "-o", "boot_ksu.img"
+          ]
+
+          for k, v in args.items():
+              if v is None or k not in allowed_keys:
+                  continue
+
+              val = str(v)
+              if val.startswith("b\x27") and val.endswith("\x27"):
+                  val = val[2:-1]
+              elif val.startswith("b\"") and val.endswith("\""):
+                  val = val[2:-1]
+
+              if k in ("dtb", "second"):
+                  file_path = os.path.join("unpacked", k)
+                  if not os.path.exists(file_path):
+                      continue
+                  val = file_path
+
+              cmd.extend([f"--{k}", val])
+
+          subprocess.run(cmd, check=True)
+          '
 
       - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
