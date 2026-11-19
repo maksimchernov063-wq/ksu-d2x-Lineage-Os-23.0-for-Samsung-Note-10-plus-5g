@@ -1,0 +1,65 @@
+name: Build KernelSU-Next for d2x
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git bc bison build-essential ccache curl flex libssl-dev libncurses5-dev lzop zip python3 python-is-python3
+
+      - name: Clone LineageOS 23.2 Kernel Source
+        run: |
+          GH="https://""github.com"
+          git clone --depth=1 -b lineage-23.2 "$GH/LineageOS/android_kernel_samsung_exynos9820.git" kernel
+
+      - name: Setup Toolchain (Clang + GCC)
+        run: |
+          GH="https://""github.com"
+          RAW="https://""://githubusercontent.com"
+          mkdir -p toolchain/clang toolchain/gcc64 toolchain/gcc32
+          git clone --depth=1 "$GH/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git" toolchain/gcc64
+          git clone --depth=1 "$GH/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git" toolchain/gcc32
+          cd toolchain/clang
+          bash <(curl -s "$RAW/Neutron-Toolchains/antman/main/antman") -S
+
+      - name: Integrate KernelSU-Next & Apply 4.14 Hooks
+        run: |
+          RAW="https://""://githubusercontent.com"
+          cd kernel
+          curl -LSs "$RAW/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          curl -LSs "$RAW/rifsxd/KernelSU-Next/next/kernel/manual_hooks.patch" -o hooks.patch || true
+          if [ -s hooks.patch ]; then git apply hooks.patch || true; fi
+          echo "CONFIG_KSU=y" >> arch/arm64/configs/exynos9820-d2x_defconfig
+          echo "CONFIG_OVERLAY_FS=y" >> arch/arm64/configs/exynos9820-d2x_defconfig
+          echo "CONFIG_KPROBES=n" >> arch/arm64/configs/exynos9820-d2x_defconfig
+
+      - name: Compile Kernel
+        run: |
+          cd kernel
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$GITHUB_WORKSPACE/toolchain/gcc64/bin:$GITHUB_WORKSPACE/toolchain/gcc32/bin:$PATH"
+          make O=out ARCH=arm64 exynos9820-d2x_defconfig
+          make -j$(nproc) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+      - name: Pack AnyKernel3 ZIP
+        run: |
+          GH="https://""github.com"
+          git clone --depth=1 "$GH/osm0sis/AnyKernel3.git" AnyKernel3
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          sed -i 's|BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|BLOCK=/dev/block/by-name/boot;|g' AnyKernel3/anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=0;\nRAMDISK_COMPRESSION=auto;/g' AnyKernel3/anykernel.sh
+          cd AnyKernel3
+          zip -r9 ../KernelSU-Next-d2x.zip * -x .git README.md *placeholder
+
+      - name: Upload Kernel ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: KernelSU-Next-d2x
+          path: KernelSU-Next-d2x.zip
