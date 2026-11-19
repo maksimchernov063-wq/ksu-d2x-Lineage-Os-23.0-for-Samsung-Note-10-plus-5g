@@ -17,12 +17,12 @@ jobs:
           GH="https://github.com"
           git clone --depth=1 -b lineage-23.2 "$GH/LineageOS/android_kernel_samsung_exynos9820.git" kernel
 
-      - name: Setup Official AOSP Clang (r563880c)
+      - name: Setup Clang (r563880c)
         run: |
-          GOOG="https://android.googlesource.com"
           mkdir -p toolchain/clang
-          curl -fL "$GOOG/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r563880c.tar.gz" -o clang.tar.gz
-          tar -xzf clang.tar.gz -C toolchain/clang
+          curl -LO "https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r563880c.tar.gz"
+          tar -xzf clang-r563880c.tar.gz -C toolchain/clang
+          rm clang-r563880c.tar.gz
 
       - name: Integrate KernelSU-Next (legacy for 4.14)
         run: |
