@@ -1,4 +1,4 @@
-name: Build KernelSU-Next for d2x
+name: Build KernelSU-Next IMG for d2x
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git bc bison build-essential ccache curl flex libssl-dev libncurses5-dev lzop zip python3 python-is-python3
+          sudo apt-get install -y git bc bison build-essential ccache curl flex libssl-dev libncurses5-dev lzop zip unzip python3 python-is-python3
 
       - name: Clone LineageOS 23.2 Kernel Source
         run: |
@@ -47,19 +47,26 @@ jobs:
           make O=out ARCH=arm64 exynos9820-d2x_defconfig
           make -j$(nproc) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
-      - name: Pack AnyKernel3 ZIP
+      - name: Repack boot.img with magiskboot
         run: |
           GH="https://""github.com"
-          git clone --depth=1 "$GH/osm0sis/AnyKernel3.git" AnyKernel3
-          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          sed -i 's|BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|BLOCK=/dev/block/by-name/boot;|g' AnyKernel3/anykernel.sh
-          sed -i 's/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=0;\nRAMDISK_COMPRESSION=auto;/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3
-          zip -r9 ../KernelSU-Next-d2x.zip * -x .git README.md *placeholder
+          API="https://""download.lineageos.org"
+          MIR="https://""mirrorbits.lineageos.org"
+          curl -L "$GH/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk" -o magisk.apk
+          unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
+          mv libmagiskboot.so magiskboot && chmod +x magiskboot
+          curl -fL "$MIR/full/d2x/20261115/boot.img" -o boot.img || true
+          if [ ! -s boot.img ]; then
+            curl -sL "$API/api/v2/builds/d2x/nightly" -o builds.json
+            BOOT_URL=$(python3 -c "import json; d=json.load(open('builds.json')); print([f['url'] for b in d for f in b['files'] if f['filename']=='boot.img'])")
+            curl -fL "$BOOT_URL" -o boot.img
+          fi
+          ./magiskboot unpack boot.img
+          cp kernel/out/arch/arm64/boot/Image kernel
+          ./magiskboot repack boot.img boot_ksu.img
 
-      - name: Upload Kernel ZIP
+      - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-Next-d2x
-          path: KernelSU-Next-d2x.zip
+          name: boot_ksu
+          path: boot_ksu.img
