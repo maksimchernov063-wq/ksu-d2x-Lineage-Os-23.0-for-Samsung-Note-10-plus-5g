@@ -48,60 +48,38 @@ jobs:
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 exynos9820-d2x_defconfig
           make -j$(nproc) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Unpack and Repack boot.img
+      - name: Repack with Magiskboot (Jemini Method)
         run: |
           MIR="https://mirrorbits.lineageos.org"
-          GOOG="https://android.googlesource.com"
-          
           curl -fL "$MIR/full/d2x/20261115/boot.img" -o boot.img
-          curl -fL "$GOOG/platform/system/tools/mkbootimg/+/refs/heads/main/unpack_bootimg.py?format=TEXT" | base64 -d > unpack_bootimg.py
           
-          python3 unpack_bootimg.py --boot_img boot.img --out unpacked
+          # Скачиваем magiskboot (тот самый, что был у Джемени)
+          curl -L "https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk" -o magisk.apk
+          unzip -o magisk.apk lib/x86_64/libmagiskboot.so -d .
+          mv lib/x86_64/libmagiskboot.so magiskboot
+          chmod +x magiskboot
           
-          if [ ! -f unpacked/mkbootimg_args.json ]; then
-            echo "ERROR: mkbootimg_args.json not found!"
+          # ВОТ ЗДЕСЬ ОБХОД ОШИБКИ BAD FILE DESCRIPTOR:
+          # Принудительно работаем в /tmp, чтобы избежать проблем с правами,
+          # и игнорируем ошибку AVB (ASN.1), так как нам нужно только ядро и рамдиск.
+          cd /tmp
+          cp "$GITHUB_WORKSPACE/boot.img" .
+          "$GITHUB_WORKSPACE/magiskboot" unpack boot.img || true
+          
+          # Проверяем, что ядро и рамдиск распаковались
+          if [ ! -f kernel ] || [ ! -f ramdisk.cpio ]; then
+            echo "ERROR: magiskboot failed to unpack kernel or ramdisk!"
             exit 1
           fi
           
-          python3 -c '
-          import json, subprocess, os, sys
-
-          with open("unpacked/mkbootimg_args.json") as f:
-              args = json.load(f)
-
-          allowed_keys = {
-              "kernel_offset", "ramdisk_offset", "second_offset", "tags_offset",
-              "dtb_offset", "pagesize", "header_version", "os_version", "os_patch_level",
-              "cmdline", "base", "board", "dtb", "second"
-          }
-
-          cmd = [
-              "mkbootimg",
-              "--kernel", "kernel/out/arch/arm64/boot/Image",
-              "--ramdisk", "unpacked/ramdisk",
-              "-o", "boot_ksu.img"
-          ]
-
-          for k, v in args.items():
-              if v is None or k not in allowed_keys:
-                  continue
-
-              val = str(v)
-              if val.startswith("b\x27") and val.endswith("\x27"):
-                  val = val[2:-1]
-              elif val.startswith("b\"") and val.endswith("\""):
-                  val = val[2:-1]
-
-              if k in ("dtb", "second"):
-                  file_path = os.path.join("unpacked", k)
-                  if not os.path.exists(file_path):
-                      continue
-                  val = file_path
-
-              cmd.extend([f"--{k}", val])
-
-          subprocess.run(cmd, check=True)
-          '
+          # Подменяем ядро на наше собранное
+          cp "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image" kernel
+          
+          # Собираем обратно (magiskboot repack сам подхватит оригинальные параметры из boot.img)
+          "$GITHUB_WORKSPACE/magiskboot" repack boot.img boot_ksu.img
+          
+          # Переносим результат обратно в workspace
+          mv boot_ksu.img "$GITHUB_WORKSPACE/boot_ksu.img"
 
       - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
