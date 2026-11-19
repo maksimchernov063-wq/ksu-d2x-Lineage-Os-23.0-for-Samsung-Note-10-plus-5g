@@ -1,4 +1,4 @@
-name: Build KernelSU-Next Legacy IMG for d2x
+name: Build KernelSU-Next Legacy IMG for d2x (Manual Hooks)
 
 on:
   workflow_dispatch:
@@ -24,20 +24,37 @@ jobs:
           tar -xzf clang-r563880c.tar.gz -C toolchain/clang
           rm clang-r563880c.tar.gz
 
-      - name: Integrate KernelSU-Next (legacy for 4.14)
+      - name: Integrate KernelSU-Next (Manual Hooks)
         run: |
           RAW="https://raw.githubusercontent.com"
           cd kernel
           
+          # 1. Клонируем драйвер KernelSU-Next (legacy ветка)
           curl -LSs "$RAW/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           
+          # 2. Добавляем вызовы в fs/exec.c
+          sed -i '/static int do_execveat_common/i\#ifdef CONFIG_KSU\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
+          sed -i '/return __do_execve_file(fd, filename, argv, envp, flags, NULL);/i\#ifdef CONFIG_KSU\n    ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif' fs/exec.c
+
+          # 3. Добавляем вызовы в fs/open.c
+          sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/i\#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif' fs/open.c
+          sed -i '/if (mode & ~S_IRWXO)/i\#ifdef CONFIG_KSU\n    ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif' fs/open.c
+
+          # 4. Добавляем вызовы в fs/read_write.c
+          sed -i '/ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/i\#ifdef CONFIG_KSU\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n#endif' fs/read_write.c
+          sed -i '/if (!(file->f_mode & FMODE_READ))/i\#ifdef CONFIG_KSU\n    ksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif' fs/read_write.c
+
+          # 5. Добавляем вызовы в fs/stat.c
+          sed -i '/int vfs_statx(int dfd, const char __user \*filename, int flags, struct kstat \*stat, int domain)/i\#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif' fs/stat.c
+          sed -i '/if (flags & AT_NO_AUTOMOUNT)/i\#ifdef CONFIG_KSU\n    ksu_handle_stat(&dfd, &filename, &flags);\n#endif' fs/stat.c
+
+          # 6. Конфиги для ручных хуков
           DEFCONFIG="arch/arm64/configs/exynos9820-d2x_defconfig"
           echo "CONFIG_KSU=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_KPROBE_HOOKS=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_WITH_KPROBES=n" >> $DEFCONFIG
+          echo "CONFIG_KSU_KPROBE_HOOKS=n" >> $DEFCONFIG
+          echo "CONFIG_KPROBES=n" >> $DEFCONFIG
           echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
-          echo "CONFIG_KPROBES=y" >> $DEFCONFIG
-          echo "CONFIG_HAVE_KPROBES=y" >> $DEFCONFIG
-          echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
 
       - name: Compile Kernel with LLVM
         run: |
@@ -49,7 +66,7 @@ jobs:
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 exynos9820-d2x_defconfig
           make -j$(nproc) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Repack with Magiskboot (Jemini Method)
+      - name: Repack with Magiskboot
         run: |
           MIR="https://mirrorbits.lineageos.org"
           curl -fL "$MIR/full/d2x/20261115/boot.img" -o boot.img
@@ -77,5 +94,5 @@ jobs:
       - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
         with:
-          name: boot_ksu
+          name: boot_ksu_manual
           path: boot_ksu.img
