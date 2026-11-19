@@ -1,4 +1,4 @@
-name: Build KernelSU-Next Legacy Manual IMG for d2x
+name: Build KernelSU-Next 33355 (v5) IMG for d2x
 
 on:
   workflow_dispatch:
@@ -23,13 +23,30 @@ jobs:
           mkdir -p toolchain/clang
           curl -fL "$GH/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r563880c.tar.gz" -o clang.tar.gz
           tar -xzf clang.tar.gz -C toolchain/clang
-          rm clang.tar.gz
+          rm clang-r563880c.tar.gz
 
-      - name: Integrate KernelSU-Next (legacy) & Apply 4.14 Hooks
+      - name: Integrate KernelSU-Next (33355) & Apply 4.14 Hooks
         run: |
-          RAW="https://""raw.githubusercontent.com"
+          GH="https://""github.com"
+          RAW="https://""://githubusercontent.com"
           cd kernel
-          curl -LSs "$RAW/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          
+          # Скачиваем точно ревизию 33355 (протокол 5) под ваш APK v3.4.2_33355
+          git clone "$GH/KernelSU-Next/KernelSU-Next.git" KernelSU-Next
+          cd KernelSU-Next
+          git checkout legacy || git checkout next
+          COMMIT_33355=$(git log --all --grep="33355" --format="%H" -n 1)
+          if [ -z "$COMMIT_33355" ]; then
+            COMMIT_33355=$(git log --until="2026-10-15" --format="%H" -n 1)
+          fi
+          echo "Using KernelSU-Next commit: $COMMIT_33355"
+          git checkout "$COMMIT_33355"
+          cd ..
+          
+          ln -sf "$(pwd)/KernelSU-Next/kernel" drivers/kernelsu
+          grep -q "kernelsu" drivers/Makefile || echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
+          grep -q "kernelsu" drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          
           curl -fL "$RAW/ravindu644/Android-Kernel-Tutorials/main/patches/016.KernelSU-Hooks.patch" -o ksu.patch
           patch -p1 --fuzz=3 --forward < ksu.patch || true
           
