@@ -1,4 +1,4 @@
-name: Build KernelSU-Next Legacy IMG for d2x (Fixed Manual Hook Config)
+name: Build KernelSU-Next Legacy IMG for d2x (Manual Hooks via Coccinelle)
 
 on:
   workflow_dispatch:
@@ -24,26 +24,36 @@ jobs:
           tar -xzf clang-r563880c.tar.gz -C toolchain/clang
           rm clang-r563880c.tar.gz
 
-      - name: Integrate KernelSU-Next (Manual Hooks + Correct Config)
+      - name: Integrate KernelSU-Next (Manual Hooks via Coccinelle)
         run: |
           cd kernel
           
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           
           DEFCONFIG="arch/arm64/configs/exynos9820-d2x_defconfig"
-          
           echo "CONFIG_KSU=y" >> $DEFCONFIG
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> $DEFCONFIG
           echo "CONFIG_KSU_WITH_KPROBES=n" >> $DEFCONFIG
           echo "CONFIG_KPROBES=n" >> $DEFCONFIG
           echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
           
-          echo "=== Applying Coccinelle classic-hooks ==="
           git clone --depth=1 https://github.com/devnoname120/kernelsu-coccinelle.git /tmp/kernelsu-coccinelle
           cd /tmp/kernelsu-coccinelle/classic-hooks
-          ./apply.sh "$GITHUB_WORKSPACE/kernel"
-          cd "$GITHUB_WORKSPACE/kernel"
-          echo "SUCCESS: Coccinelle patches applied."
+          
+          # Запускаем Coccinelle и проверяем, что патчи реально применились
+          if ./apply.sh "$GITHUB_WORKSPACE/kernel"; then
+            echo "Coccinelle patches applied successfully."
+          else
+            echo "ERROR: Coccinelle failed to apply patches. Check kernel source structure."
+            exit 1
+          fi
+          
+          # Проверка, что в ключевых файлах появились вызовы ksu
+          if ! grep -q "ksu_handle_execveat" "$GITHUB_WORKSPACE/kernel/fs/exec.c"; then
+            echo "ERROR: ksu_handle_execveat not found in fs/exec.c after patching!"
+            exit 1
+          fi
+          echo "Manual hooks verified in fs/exec.c."
 
       - name: Compile Kernel with LLVM
         run: |
@@ -83,5 +93,5 @@ jobs:
       - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
         with:
-          name: boot_ksu_fixed
+          name: boot_ksu_manual_fixed
           path: boot_ksu.img
