@@ -23,7 +23,7 @@ jobs:
           mkdir -p toolchain/clang
           curl -fL "$GH/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r563880c.tar.gz" -o clang.tar.gz
           tar -xzf clang.tar.gz -C toolchain/clang
-          rm clang-r563880c.tar.gz
+          rm clang.tar.gz
 
       - name: Integrate KernelSU-Next (33355) & Apply 4.14 Hooks
         run: |
