@@ -1,4 +1,4 @@
-name: Build KernelSU-Next Legacy IMG for d2x (Manual Hooks via Coccinelle)
+name: Build KernelSU-Next Legacy IMG for d2x (Sed Hooks)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git bc bison build-essential ccache curl flex libssl-dev libncurses5-dev lzop zip unzip python3 python-is-python3 mkbootimg jq coccinelle
+          sudo apt-get install -y git bc bison build-essential ccache curl flex libssl-dev libncurses5-dev lzop zip unzip python3 python-is-python3 mkbootimg jq
 
       - name: Clone LineageOS 23.2 Kernel Source
         run: |
@@ -24,7 +24,7 @@ jobs:
           tar -xzf clang-r563880c.tar.gz -C toolchain/clang
           rm clang-r563880c.tar.gz
 
-      - name: Integrate KernelSU-Next (Manual Hooks via Coccinelle)
+      - name: Integrate KernelSU-Next (Manual Sed Hooks)
         run: |
           cd kernel
           
@@ -37,23 +37,50 @@ jobs:
           echo "CONFIG_KPROBES=n" >> $DEFCONFIG
           echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
           
-          git clone --depth=1 https://github.com/devnoname120/kernelsu-coccinelle.git /tmp/kernelsu-coccinelle
-          cd /tmp/kernelsu-coccinelle/classic-hooks
+          sed -i '/^static int do_execveat_common/i\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\
+#endif' fs/exec.c
           
-          # Запускаем Coccinelle и проверяем, что патчи реально применились
-          if ./apply.sh "$GITHUB_WORKSPACE/kernel"; then
-            echo "Coccinelle patches applied successfully."
-          else
-            echo "ERROR: Coccinelle failed to apply patches. Check kernel source structure."
+          sed -i '/return __do_execve_file(fd, filename, argv, envp, flags, NULL);/i\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\
+#endif' fs/exec.c
+          
+          sed -i '/^long do_faccessat(int dfd, const char __user \*filename, int mode)/i\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
+#endif' fs/open.c
+          
+          sed -i '/if (mode & ~S_IRWXO)/i\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
+#endif' fs/open.c
+          
+          sed -i '/^ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/i\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
+#endif' fs/read_write.c
+          
+          sed -i '/if (!(file->f_mode & FMODE_READ))/i\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_vfs_read(&file, &buf, &count, &pos);\
+#endif' fs/read_write.c
+          
+          if ! grep -q "ksu_handle_execveat" fs/exec.c; then
+            echo "FATAL: sed failed on fs/exec.c"
+            exit 1
+          fi
+          if ! grep -q "ksu_handle_faccessat" fs/open.c; then
+            echo "FATAL: sed failed on fs/open.c"
+            exit 1
+          fi
+          if ! grep -q "ksu_handle_vfs_read" fs/read_write.c; then
+            echo "FATAL: sed failed on fs/read_write.c"
             exit 1
           fi
           
-          # Проверка, что в ключевых файлах появились вызовы ksu
-          if ! grep -q "ksu_handle_execveat" "$GITHUB_WORKSPACE/kernel/fs/exec.c"; then
-            echo "ERROR: ksu_handle_execveat not found in fs/exec.c after patching!"
-            exit 1
-          fi
-          echo "Manual hooks verified in fs/exec.c."
+          echo "SUCCESS: Manual sed hooks inserted and verified."
 
       - name: Compile Kernel with LLVM
         run: |
@@ -93,5 +120,5 @@ jobs:
       - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
         with:
-          name: boot_ksu_manual_fixed
+          name: boot_ksu_sed
           path: boot_ksu.img
