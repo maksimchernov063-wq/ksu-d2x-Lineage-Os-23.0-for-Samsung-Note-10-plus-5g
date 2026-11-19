@@ -1,4 +1,4 @@
-name: Build KernelSU-Next ManualHooks IMG for d2x
+name: Build KernelSU-Next Legacy Manual IMG for d2x
 
 on:
   workflow_dispatch:
@@ -25,72 +25,30 @@ jobs:
           tar -xzf clang.tar.gz -C toolchain/clang
           rm clang.tar.gz
 
-      - name: Integrate KernelSU-Next & Apply Manual Hooks for 4.14
+      - name: Integrate KernelSU-Next (legacy) & Apply 4.14 Hooks
         run: |
           RAW="https://""raw.githubusercontent.com"
           cd kernel
-          curl -LSs "$RAW/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          curl -LSs "$RAW/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          curl -fL "$RAW/ravindu644/Android-Kernel-Tutorials/main/patches/016.KernelSU-Hooks.patch" -o ksu.patch
+          patch -p1 --fuzz=3 --forward < ksu.patch || true
           
           python3 - << 'EOF'
-          def patch_file(path, target, replacement):
-              with open(path, "r") as f:
-                  content = f.read()
-              assert target in content, f"Target not found in {path}"
-              content = content.replace(target, replacement, 1)
-              with open(path, "w") as f:
-                  f.write(content)
-              print(f"Patched {path} successfully")
-
-          patch_file(
-              "fs/exec.c",
-              "static int do_execveat_common(int fd, struct filename *filename,",
-              "extern bool ksu_execveat_hook __read_mostly;\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\nstatic int do_execveat_common(int fd, struct filename *filename,"
-          )
-          patch_file(
-              "fs/exec.c",
-              "if (IS_ERR(filename))",
-              "if (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n\telse\n\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n\tif (IS_ERR(filename))"
-          )
-          patch_file(
-              "fs/open.c",
-              "SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)",
-              "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\nSYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)"
-          )
-          patch_file(
-              "fs/open.c",
-              "if (mode & ~S_IRWXO)",
-              "ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n\tif (mode & ~S_IRWXO)"
-          )
-          patch_file(
-              "fs/read_write.c",
-              "ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)",
-              "extern bool ksu_vfs_read_hook __read_mostly;\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\nssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)"
-          )
-          patch_file(
-              "fs/read_write.c",
-              "if (!(file->f_mode & FMODE_READ))",
-              "if (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n\tif (!(file->f_mode & FMODE_READ))"
-          )
-          patch_file(
-              "fs/stat.c",
-              "int vfs_statx(int dfd, const char __user *filename, int flags,",
-              "extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nint vfs_statx(int dfd, const char __user *filename, int flags,"
-          )
-          patch_file(
-              "fs/stat.c",
-              "if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |",
-              "ksu_handle_stat(&dfd, &filename, &flags);\n\tif ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |"
-          )
-          patch_file(
-              "drivers/input/input.c",
-              "void input_event(struct input_dev *dev,",
-              "extern bool ksu_input_hook __read_mostly;\nextern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\nvoid input_event(struct input_dev *dev,"
-          )
-          patch_file(
-              "drivers/input/input.c",
-              "if (is_event_supported(type, dev->evbit, EV_MAX)) {",
-              "if (unlikely(ksu_input_hook))\n\t\tksu_handle_input_handle_event(&type, &code, &value);\n\tif (is_event_supported(type, dev->evbit, EV_MAX)) {"
-          )
+          with open("kernel/reboot.c", "r") as f:
+              rb = f.read()
+          if "ksu_handle_sys_reboot" not in rb:
+              rb = rb.replace(
+                  "SYSCALL_DEFINE4(reboot,",
+                  "#ifdef CONFIG_KSU\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif\nSYSCALL_DEFINE4(reboot,",
+                  1
+              ).replace(
+                  "if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))",
+                  "#ifdef CONFIG_KSU\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif\n\tif (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))",
+                  1
+              )
+              with open("kernel/reboot.c", "w") as f:
+                  f.write(rb)
+              print("Added ksu_handle_sys_reboot to kernel/reboot.c")
           EOF
 
       - name: Configure and Compile Kernel
@@ -101,9 +59,10 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
           
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 exynos9820-d2x_defconfig
-          ./scripts/config --file out/.config -e KSU -e KSU_MANUAL_HOOK -e OVERLAY_FS -d KPROBES -d KSU_KPROBE_HOOKS
+          ./scripts/config --file out/.config -e KSU -e KSU_MANUAL_HOOK -e OVERLAY_FS -d KPROBES -d KSU_KPROBES_HOOK -d KSU_KPROBE_HOOKS
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
           grep -E "CONFIG_KSU|CONFIG_OVERLAY_FS" out/.config
+          grep -q "CONFIG_KSU=y" out/.config
           
           make -j$(nproc) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
