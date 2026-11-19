@@ -47,23 +47,18 @@ jobs:
           make O=out ARCH=arm64 exynos9820-d2x_defconfig
           make -j$(nproc) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
-      - name: Repack boot.img with magiskboot
+      - name: Repack boot.img with mkbootimg
         run: |
           GH="https://""github.com"
-          API="https://""download.lineageos.org"
           MIR="https://""mirrorbits.lineageos.org"
           curl -L "$GH/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk" -o magisk.apk
           unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
           mv libmagiskboot.so magiskboot && chmod +x magiskboot
-          curl -fL "$MIR/full/d2x/20261115/boot.img" -o boot.img || true
-          if [ ! -s boot.img ]; then
-            curl -sL "$API/api/v2/builds/d2x/nightly" -o builds.json
-            BOOT_URL=$(python3 -c "import json; d=json.load(open('builds.json')); print([f['url'] for b in d for f in b['files'] if f['filename']=='boot.img'])")
-            curl -fL "$BOOT_URL" -o boot.img
-          fi
+          curl -fL "$MIR/full/d2x/20261115/boot.img" -o boot.img
           ./magiskboot unpack boot.img
-          cp kernel/out/arch/arm64/boot/Image kernel
-          ./magiskboot repack boot.img boot_ksu.img
+          git clone --depth=1 "$GH/osm0sis/mkbootimg.git" mkbootimg_src
+          make -C mkbootimg_src
+          ./mkbootimg_src/mkbootimg --kernel kernel/out/arch/arm64/boot/Image --ramdisk ramdisk.cpio --cmdline "androidboot.super_partition=system" --base 0x10000000 --pagesize 2048 --header_version 1 --os_version 16.0.0 --os_patch_level 2026-11 -o boot_ksu.img
 
       - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
