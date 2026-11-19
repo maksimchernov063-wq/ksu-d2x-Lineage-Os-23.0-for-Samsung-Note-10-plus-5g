@@ -1,4 +1,4 @@
-name: Build KernelSU-Next Legacy IMG for d2x (Manual Hooks)
+name: Build KernelSU-Next Legacy IMG for d2x (Manual Hooks + Coccinelle Fallback)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git bc bison build-essential ccache curl flex libssl-dev libncurses5-dev lzop zip unzip python3 python-is-python3 mkbootimg jq
+          sudo apt-get install -y git bc bison build-essential ccache curl flex libssl-dev libncurses5-dev lzop zip unzip python3 python-is-python3 mkbootimg jq coccinelle
 
       - name: Clone LineageOS 23.2 Kernel Source
         run: |
@@ -24,37 +24,33 @@ jobs:
           tar -xzf clang-r563880c.tar.gz -C toolchain/clang
           rm clang-r563880c.tar.gz
 
-      - name: Integrate KernelSU-Next (Manual Hooks)
+      - name: Integrate KernelSU-Next (Hooks with Fallback)
         run: |
-          RAW="https://raw.githubusercontent.com"
           cd kernel
           
-          # 1. Клонируем драйвер KernelSU-Next (legacy ветка)
-          curl -LSs "$RAW/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           
-          # 2. Добавляем вызовы в fs/exec.c
-          sed -i '/static int do_execveat_common/i\#ifdef CONFIG_KSU\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
-          sed -i '/return __do_execve_file(fd, filename, argv, envp, flags, NULL);/i\#ifdef CONFIG_KSU\n    ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif' fs/exec.c
-
-          # 3. Добавляем вызовы в fs/open.c
-          sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/i\#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif' fs/open.c
-          sed -i '/if (mode & ~S_IRWXO)/i\#ifdef CONFIG_KSU\n    ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif' fs/open.c
-
-          # 4. Добавляем вызовы в fs/read_write.c
-          sed -i '/ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/i\#ifdef CONFIG_KSU\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n#endif' fs/read_write.c
-          sed -i '/if (!(file->f_mode & FMODE_READ))/i\#ifdef CONFIG_KSU\n    ksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif' fs/read_write.c
-
-          # 5. Добавляем вызовы в fs/stat.c
-          sed -i '/int vfs_statx(int dfd, const char __user \*filename, int flags, struct kstat \*stat, int domain)/i\#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif' fs/stat.c
-          sed -i '/if (flags & AT_NO_AUTOMOUNT)/i\#ifdef CONFIG_KSU\n    ksu_handle_stat(&dfd, &filename, &flags);\n#endif' fs/stat.c
-
-          # 6. Конфиги для ручных хуков
           DEFCONFIG="arch/arm64/configs/exynos9820-d2x_defconfig"
           echo "CONFIG_KSU=y" >> $DEFCONFIG
           echo "CONFIG_KSU_WITH_KPROBES=n" >> $DEFCONFIG
-          echo "CONFIG_KSU_KPROBE_HOOKS=n" >> $DEFCONFIG
           echo "CONFIG_KPROBES=n" >> $DEFCONFIG
           echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
+          
+          echo "=== Attempting to apply GoRhanHee patch first ==="
+          curl -LSs "https://raw.githubusercontent.com/GoRhanHee/android_kernel_samsung_exynos9820/refs/heads/main/fs%3A%20scope_min_manual_hooks_v1.6.patch" -o hooks.patch
+          
+          if [ -s hooks.patch ] && git apply --check hooks.patch 2>/dev/null; then
+            git apply hooks.patch
+            echo "SUCCESS: GoRhanHee patch applied."
+          else
+            echo "WARNING: GoRhanHee patch failed or not found. Falling back to Coccinelle..."
+            
+            git clone --depth=1 https://github.com/devnoname120/kernelsu-coccinelle.git /tmp/kernelsu-coccinelle
+            cd /tmp/kernelsu-coccinelle/scope-minimized-hooks
+            ./apply.sh "$GITHUB_WORKSPACE/kernel"
+            cd "$GITHUB_WORKSPACE/kernel"
+            echo "SUCCESS: Coccinelle patches applied."
+          fi
 
       - name: Compile Kernel with LLVM
         run: |
@@ -94,5 +90,5 @@ jobs:
       - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
         with:
-          name: boot_ksu_manual
+          name: boot_ksu_coccinelle
           path: boot_ksu.img
