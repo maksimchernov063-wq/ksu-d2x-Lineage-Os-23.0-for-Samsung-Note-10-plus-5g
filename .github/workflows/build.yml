@@ -43,13 +43,13 @@ jobs:
             git apply hooks.patch
             echo "SUCCESS: GoRhanHee patch applied."
           else
-            echo "WARNING: GoRhanHee patch failed or not found. Falling back to Coccinelle..."
+            echo "WARNING: GoRhanHee patch failed or not found. Falling back to Coccinelle classic-hooks..."
             
             git clone --depth=1 https://github.com/devnoname120/kernelsu-coccinelle.git /tmp/kernelsu-coccinelle
-            cd /tmp/kernelsu-coccinelle/scope-minimized-hooks
+            cd /tmp/kernelsu-coccinelle/classic-hooks
             ./apply.sh "$GITHUB_WORKSPACE/kernel"
             cd "$GITHUB_WORKSPACE/kernel"
-            echo "SUCCESS: Coccinelle patches applied."
+            echo "SUCCESS: Coccinelle classic-hooks patches applied."
           fi
 
       - name: Compile Kernel with LLVM
