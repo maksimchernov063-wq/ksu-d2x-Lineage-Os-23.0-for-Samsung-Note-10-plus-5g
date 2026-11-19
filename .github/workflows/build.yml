@@ -28,7 +28,8 @@ jobs:
         run: |
           RAW="https://raw.githubusercontent.com"
           cd kernel
-          curl -LSs "$RAW/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          
+          curl -LSs "$RAW/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           
           DEFCONFIG="arch/arm64/configs/exynos9820-d2x_defconfig"
           echo "CONFIG_KSU=y" >> $DEFCONFIG
@@ -53,32 +54,24 @@ jobs:
           MIR="https://mirrorbits.lineageos.org"
           curl -fL "$MIR/full/d2x/20261115/boot.img" -o boot.img
           
-          # Скачиваем magiskboot (тот самый, что был у Джемени)
           curl -L "https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk" -o magisk.apk
           unzip -o magisk.apk lib/x86_64/libmagiskboot.so -d .
           mv lib/x86_64/libmagiskboot.so magiskboot
           chmod +x magiskboot
           
-          # ВОТ ЗДЕСЬ ОБХОД ОШИБКИ BAD FILE DESCRIPTOR:
-          # Принудительно работаем в /tmp, чтобы избежать проблем с правами,
-          # и игнорируем ошибку AVB (ASN.1), так как нам нужно только ядро и рамдиск.
           cd /tmp
           cp "$GITHUB_WORKSPACE/boot.img" .
           "$GITHUB_WORKSPACE/magiskboot" unpack boot.img || true
           
-          # Проверяем, что ядро и рамдиск распаковались
           if [ ! -f kernel ] || [ ! -f ramdisk.cpio ]; then
             echo "ERROR: magiskboot failed to unpack kernel or ramdisk!"
             exit 1
           fi
           
-          # Подменяем ядро на наше собранное
           cp "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image" kernel
           
-          # Собираем обратно (magiskboot repack сам подхватит оригинальные параметры из boot.img)
           "$GITHUB_WORKSPACE/magiskboot" repack boot.img boot_ksu.img
           
-          # Переносим результат обратно в workspace
           mv boot_ksu.img "$GITHUB_WORKSPACE/boot_ksu.img"
 
       - name: Upload boot_ksu.img
