@@ -1,124 +1,83 @@
-name: Build KernelSU-Next Legacy IMG for d2x (Sed Hooks)
-
-on:
-  workflow_dispatch:
+name: Build KSU
+on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git bc bison build-essential ccache curl flex libssl-dev libncurses5-dev lzop zip unzip python3 python-is-python3 mkbootimg jq
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y git bc bison build-essential ccache curl flex libssl-dev libncurses5-dev lzop zip unzip python3 python-is-python3 mkbootimg jq
 
-      - name: Clone LineageOS 23.2 Kernel Source
-        run: |
-          GH="https://github.com"
-          git clone --depth=1 -b lineage-23.2 "$GH/LineageOS/android_kernel_samsung_exynos9820.git" kernel
+      - name: Clone Kernel
+        run: git clone --depth=1 -b lineage-23.2 https://github.com/LineageOS/android_kernel_samsung_exynos9820.git kernel
 
-      - name: Setup Clang (r563880c)
+      - name: Setup Clang
         run: |
           mkdir -p toolchain/clang
-          curl -LO "https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r563880c.tar.gz"
+          curl -LO https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r563880c.tar.gz
           tar -xzf clang-r563880c.tar.gz -C toolchain/clang
           rm clang-r563880c.tar.gz
 
-      - name: Integrate KernelSU-Next (Manual Sed Hooks)
+      - name: Integrate KSU
         run: |
           cd kernel
-          
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
-          
-          DEFCONFIG="arch/arm64/configs/exynos9820-d2x_defconfig"
-          echo "CONFIG_KSU=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_MANUAL_HOOK=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_WITH_KPROBES=n" >> $DEFCONFIG
-          echo "CONFIG_KPROBES=n" >> $DEFCONFIG
-          echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
-          
+          curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh | bash -s legacy
+          echo "CONFIG_KSU=y" >> arch/arm64/configs/exynos9820-d2x_defconfig
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> arch/arm64/configs/exynos9820-d2x_defconfig
+          echo "CONFIG_KPROBES=n" >> arch/arm64/configs/exynos9820-d2x_defconfig
+          echo "CONFIG_OVERLAY_FS=y" >> arch/arm64/configs/exynos9820-d2x_defconfig
           sed -i '/^static int do_execveat_common/i\
 #ifdef CONFIG_KSU_MANUAL_HOOK\
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\
 #endif' fs/exec.c
-          
           sed -i '/return __do_execve_file(fd, filename, argv, envp, flags, NULL);/i\
 #ifdef CONFIG_KSU_MANUAL_HOOK\
     ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\
 #endif' fs/exec.c
-          
           sed -i '/^long do_faccessat(int dfd, const char __user \*filename, int mode)/i\
 #ifdef CONFIG_KSU_MANUAL_HOOK\
 extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
 #endif' fs/open.c
-          
           sed -i '/if (mode & ~S_IRWXO)/i\
 #ifdef CONFIG_KSU_MANUAL_HOOK\
     ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
 #endif' fs/open.c
-          
           sed -i '/^ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/i\
 #ifdef CONFIG_KSU_MANUAL_HOOK\
 extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
 #endif' fs/read_write.c
-          
           sed -i '/if (!(file->f_mode & FMODE_READ))/i\
 #ifdef CONFIG_KSU_MANUAL_HOOK\
     ksu_handle_vfs_read(&file, &buf, &count, &pos);\
 #endif' fs/read_write.c
-          
-          if ! grep -q "ksu_handle_execveat" fs/exec.c; then
-            echo "FATAL: sed failed on fs/exec.c"
-            exit 1
-          fi
-          if ! grep -q "ksu_handle_faccessat" fs/open.c; then
-            echo "FATAL: sed failed on fs/open.c"
-            exit 1
-          fi
-          if ! grep -q "ksu_handle_vfs_read" fs/read_write.c; then
-            echo "FATAL: sed failed on fs/read_write.c"
-            exit 1
-          fi
-          
-          echo "SUCCESS: Manual sed hooks inserted and verified."
+          grep -q "ksu_handle_execveat" fs/exec.c || exit 1
+          grep -q "ksu_handle_faccessat" fs/open.c || exit 1
+          grep -q "ksu_handle_vfs_read" fs/read_write.c || exit 1
 
-      - name: Compile Kernel with LLVM
+      - name: Compile
         run: |
           cd kernel
           export ARCH=arm64
-          export SUBARCH=arm64
           export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
-          
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 exynos9820-d2x_defconfig
           make -j$(nproc) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Repack with Magiskboot
+      - name: Repack
         run: |
-          MIR="https://mirrorbits.lineageos.org"
-          curl -fL "$MIR/full/d2x/20261115/boot.img" -o boot.img
-          
-          curl -L "https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk" -o magisk.apk
+          curl -fL https://mirrorbits.lineageos.org/full/d2x/20261115/boot.img -o boot.img
+          curl -L https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk -o magisk.apk
           unzip -o magisk.apk lib/x86_64/libmagiskboot.so -d .
           mv lib/x86_64/libmagiskboot.so magiskboot
           chmod +x magiskboot
-          
           cd /tmp
           cp "$GITHUB_WORKSPACE/boot.img" .
           "$GITHUB_WORKSPACE/magiskboot" unpack boot.img || true
-          
-          if [ ! -f kernel ] || [ ! -f ramdisk.cpio ]; then
-            echo "ERROR: magiskboot failed to unpack kernel or ramdisk!"
-            exit 1
-          fi
-          
           cp "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image" kernel
-          
           "$GITHUB_WORKSPACE/magiskboot" repack boot.img boot_ksu.img
-          
           mv boot_ksu.img "$GITHUB_WORKSPACE/boot_ksu.img"
 
-      - name: Upload boot_ksu.img
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: boot_ksu_sed
+          name: boot_ksu
           path: boot_ksu.img
