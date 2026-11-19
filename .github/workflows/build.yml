@@ -1,4 +1,4 @@
-name: Build KernelSU-Next Legacy IMG for d2x (Manual Hooks + Coccinelle Fallback)
+name: Build KernelSU-Next Legacy IMG for d2x (Fixed Manual Hook Config)
 
 on:
   workflow_dispatch:
@@ -24,33 +24,26 @@ jobs:
           tar -xzf clang-r563880c.tar.gz -C toolchain/clang
           rm clang-r563880c.tar.gz
 
-      - name: Integrate KernelSU-Next (Hooks with Fallback)
+      - name: Integrate KernelSU-Next (Manual Hooks + Correct Config)
         run: |
           cd kernel
           
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           
           DEFCONFIG="arch/arm64/configs/exynos9820-d2x_defconfig"
+          
           echo "CONFIG_KSU=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> $DEFCONFIG
           echo "CONFIG_KSU_WITH_KPROBES=n" >> $DEFCONFIG
           echo "CONFIG_KPROBES=n" >> $DEFCONFIG
           echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
           
-          echo "=== Attempting to apply GoRhanHee patch first ==="
-          curl -LSs "https://raw.githubusercontent.com/GoRhanHee/android_kernel_samsung_exynos9820/refs/heads/main/fs%3A%20scope_min_manual_hooks_v1.6.patch" -o hooks.patch
-          
-          if [ -s hooks.patch ] && git apply --check hooks.patch 2>/dev/null; then
-            git apply hooks.patch
-            echo "SUCCESS: GoRhanHee patch applied."
-          else
-            echo "WARNING: GoRhanHee patch failed or not found. Falling back to Coccinelle classic-hooks..."
-            
-            git clone --depth=1 https://github.com/devnoname120/kernelsu-coccinelle.git /tmp/kernelsu-coccinelle
-            cd /tmp/kernelsu-coccinelle/classic-hooks
-            ./apply.sh "$GITHUB_WORKSPACE/kernel"
-            cd "$GITHUB_WORKSPACE/kernel"
-            echo "SUCCESS: Coccinelle classic-hooks patches applied."
-          fi
+          echo "=== Applying Coccinelle classic-hooks ==="
+          git clone --depth=1 https://github.com/devnoname120/kernelsu-coccinelle.git /tmp/kernelsu-coccinelle
+          cd /tmp/kernelsu-coccinelle/classic-hooks
+          ./apply.sh "$GITHUB_WORKSPACE/kernel"
+          cd "$GITHUB_WORKSPACE/kernel"
+          echo "SUCCESS: Coccinelle patches applied."
 
       - name: Compile Kernel with LLVM
         run: |
@@ -90,5 +83,5 @@ jobs:
       - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
         with:
-          name: boot_ksu_coccinelle
+          name: boot_ksu_fixed
           path: boot_ksu.img
