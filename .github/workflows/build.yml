@@ -28,10 +28,7 @@ jobs:
       - name: Integrate KernelSU-Next (33355) & Apply 4.14 Hooks
         run: |
           GH="https://""github.com"
-          RAW="https://""://githubusercontent.com"
           cd kernel
-          
-          # Скачиваем точно ревизию 33355 (протокол 5) под ваш APK v3.4.2_33355
           git clone "$GH/KernelSU-Next/KernelSU-Next.git" KernelSU-Next
           cd KernelSU-Next
           git checkout legacy || git checkout next
@@ -47,25 +44,43 @@ jobs:
           grep -q "kernelsu" drivers/Makefile || echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
           grep -q "kernelsu" drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           
-          curl -fL "$RAW/ravindu644/Android-Kernel-Tutorials/main/patches/016.KernelSU-Hooks.patch" -o ksu.patch
-          patch -p1 --fuzz=3 --forward < ksu.patch || true
-          
           python3 - << 'EOF'
-          with open("kernel/reboot.c", "r") as f:
-              rb = f.read()
-          if "ksu_handle_sys_reboot" not in rb:
-              rb = rb.replace(
-                  "SYSCALL_DEFINE4(reboot,",
-                  "#ifdef CONFIG_KSU\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif\nSYSCALL_DEFINE4(reboot,",
-                  1
-              ).replace(
-                  "if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))",
-                  "#ifdef CONFIG_KSU\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif\n\tif (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))",
-                  1
-              )
-              with open("kernel/reboot.c", "w") as f:
-                  f.write(rb)
-              print("Added ksu_handle_sys_reboot to kernel/reboot.c")
+          def p(path, old, new):
+              s = open(path).read()
+              if new.splitlines()[0] not in s:
+                  assert old in s, f"Not found in {path}: {old}"
+                  open(path, "w").write(s.replace(old, new, 1))
+                  print("Patched", path)
+
+          p("fs/exec.c", "static int do_execveat_common(int fd, struct filename *filename,",
+            "#ifdef CONFIG_KSU\nextern bool ksu_execveat_hook __read_mostly;\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif\nstatic int do_execveat_common(int fd, struct filename *filename,")
+          p("fs/exec.c", "if (IS_ERR(filename))",
+            "#ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n\telse\n\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif\n\tif (IS_ERR(filename))")
+
+          p("fs/open.c", "SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)",
+            "#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif\nSYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)")
+          p("fs/open.c", "if (mode & ~S_IRWXO)",
+            "#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n\tif (mode & ~S_IRWXO)")
+
+          p("fs/read_write.c", "ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)",
+            "#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n#endif\nssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)")
+          p("fs/read_write.c", "if (!(file->f_mode & FMODE_READ))",
+            "#ifdef CONFIG_KSU\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n\tif (!(file->f_mode & FMODE_READ))")
+
+          p("fs/stat.c", "int vfs_statx(int dfd, const char __user *filename, int flags,",
+            "#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\nint vfs_statx(int dfd, const char __user *filename, int flags,")
+          p("fs/stat.c", "if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |",
+            "#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif\n\tif ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |")
+
+          p("drivers/input/input.c", "void input_event(struct input_dev *dev,",
+            "#ifdef CONFIG_KSU\nextern bool ksu_input_hook __read_mostly;\nextern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\n#endif\nvoid input_event(struct input_dev *dev,")
+          p("drivers/input/input.c", "if (is_event_supported(type, dev->evbit, EV_MAX)) {",
+            "#ifdef CONFIG_KSU\n\tif (unlikely(ksu_input_hook))\n\t\tksu_handle_input_handle_event(&type, &code, &value);\n#endif\n\tif (is_event_supported(type, dev->evbit, EV_MAX)) {")
+
+          p("kernel/reboot.c", "SYSCALL_DEFINE4(reboot,",
+            "#ifdef CONFIG_KSU\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif\nSYSCALL_DEFINE4(reboot,")
+          p("kernel/reboot.c", "if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))",
+            "#ifdef CONFIG_KSU\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif\n\tif (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))")
           EOF
 
       - name: Configure and Compile Kernel
