@@ -27,7 +27,7 @@ jobs:
 
       - name: Integrate KernelSU-Next (legacy) & Set Protocol v5
         run: |
-          RAW="https://""://githubusercontent.com"
+          RAW="https://""raw.""githubusercontent.com"
           cd kernel
           curl -LSs "$RAW/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           
@@ -74,7 +74,7 @@ jobs:
       - name: Repack boot.img with Magiskboot
         run: |
           GH="https://""github.com"
-          MIR="https://""mirrorbits.lineageos.org"
+          MIR="https://""mirrorbits.""lineageos.org"
           curl -fL "$MIR/full/d2x/20261115/boot.img" -o boot.img
           curl -fL "$GH/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk" -o magisk.apk
           unzip -o magisk.apk lib/x86_64/libmagiskboot.so -d .
